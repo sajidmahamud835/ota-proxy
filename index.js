@@ -19,11 +19,11 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use((req, res, next) => {
     console.log('--- Incoming Request ---');
     console.log(`${req.method} ${req.originalUrl}`);
-    console.log('Headers:', req.headers);
+    console.log('Query:', req.query);
+    // console.log('Headers:', req.headers);
     if (req.body && Object.keys(req.body).length) {
         console.log('Body:', req.body);
     }
-
     // Hook into the response to log it
     const originalSend = res.send.bind(res);
     res.send = (body) => {
