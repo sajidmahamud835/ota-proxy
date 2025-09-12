@@ -142,7 +142,7 @@ function createPhpSegments(trip) {
         airline: trip.stAirline,
         class: leg.xClass,
         baggage: trip.fBag.replace('Baggage:', '').trim(),
-        cabin_baggage: "N/A",
+        cabin_baggage: "7 Kg",
         departure_airport: leg.xFrom,
         departure_time: leg.DTime.substring(11, 16),
         departure_date: leg.DTime.substring(0, 10),
