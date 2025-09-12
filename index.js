@@ -160,11 +160,15 @@ function createPhpSegments(trip) {
         // FIX 2: Map the Base Fare to actual_price
         actual_price: (trip.fBFare || 0).toString(),
         adult_price: trip.fFare.toString(),
-        child_price: "0",
-        infant_price: "0",
+        child_price: trip.fFare.toString(),
+        infant_price: trip.fFare.toString(),
         booking_data: {
             booking_id: trip.fAMYid,
-            fSoft: trip.fSoft, fGDSid: trip.fGDSid, transit_duration: trip.fTransit1 || "",
+            fSoft: trip.fSoft, fGDSid: trip.fGDSid,
+            transit1: trip.fTransit1 || "",
+            transit2: trip.fTransit2 || "",
+            transit_ap1: trip.fTransitAP1 || "",
+            transit_ap2: trip.fTransitAP2 || "",
             aircraft_model: trip.fModel || "",
             source: trip.csource || "GDS", // e.g., GDS, NDC, LCC
         },
