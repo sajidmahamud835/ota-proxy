@@ -5,24 +5,40 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const morgan = require('morgan');
 const bodyParser = require('body-parser');
 const axios = require('axios');
+const multer = require('multer'); // <-- Import multer
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const upload = multer(); // <-- Initialize multer
 
+// --- API Targets ---
 const PHPTRAVELS_TARGET = 'https://api.phptravels.com';
 const DUFFEL_API_ENDPOINT = 'https://api.duffel.com/air/offer_requests';
 
+// --- Middleware Setup ---
 app.use(morgan('dev'));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// The Smart Middleware
+// =========================================================================
+// THE FIX: Use multer to parse any multipart/form-data.
+// This needs to run BEFORE our smartApiHandler. It will populate req.body.
+// We use .any() because we just want to parse the fields, not save any files.
+// =========================================================================
+app.use(upload.any());
+
+
+// The Smart Middleware (unchanged logic, but will now have a valid req.body)
 const smartApiHandler = async (req, res, next) => {
     if (req.originalUrl.includes('/flights/duffel/')) {
-        console.log('[ADAPTER] Intercepted a request for the Duffel module. Handling natively.');
+        console.log('[ADAPTER] Intercepted Duffel request. Handling natively.');
+
+        // This line should now work because multer has populated req.body
         const duffelApiKey = req.body.c1;
+
         if (!duffelApiKey) {
-            console.error('[ADAPTER] Duffel API key not found in request body.');
+            console.error('[ADAPTER] Duffel API key not found in request body (expected `c1`).');
+            console.log('[DEBUG] Full request body received:', req.body); // Log the body to see what we got
             return res.status(400).json({ error: 'Missing API credentials for Duffel module.' });
         }
 
@@ -38,14 +54,12 @@ const smartApiHandler = async (req, res, next) => {
                 }
             });
 
-            // <-- DEBUG 1: Log the entire raw response from Duffel
             console.log('--- RAW DUFFEL API RESPONSE (START) ---');
-            console.log(JSON.stringify(duffelResponse.data, null, 2)); // Pretty-print the JSON
+            console.log(JSON.stringify(duffelResponse.data, null, 2));
             console.log('--- RAW DUFFEL API RESPONSE (END) ---');
 
             const phpAppResponse = mapDuffelToPhpResponse(duffelResponse.data, req.body);
 
-            // <-- DEBUG 3: Log the final object we are sending back to PHP
             console.log('--- FINAL MAPPED RESPONSE to PHP (START) ---');
             console.log(JSON.stringify(phpAppResponse, null, 2));
             console.log('--- FINAL MAPPED RESPONSE to PHP (END) ---');
@@ -72,11 +86,8 @@ app.use('/api', createProxyMiddleware({
 }));
 
 
-// MAPPING FUNCTIONS
-// =================
-
+// MAPPING FUNCTIONS (with debugging logs from before)
 function mapPhpToDuffelRequest(phpRequest) {
-    // ... (This function remains unchanged)
     const passengers = [];
     if (phpRequest.adults > 0) for (let i = 0; i < phpRequest.adults; i++) passengers.push({ type: 'adult' });
     if (phpRequest.childrens > 0) for (let i = 0; i < phpRequest.childrens; i++) passengers.push({ type: 'child' });
@@ -95,32 +106,22 @@ function mapDuffelToPhpResponse(duffelData, originalPhpRequest) {
         return {
             segments: offer.slices.map(slice => {
                 return slice.segments.map(segment => {
-
-                    // <-- DEBUG 2: Log the specific baggage data we are trying to map
                     console.log(`\n--- MAPPING OFFER ID: ${offer.id}, SEGMENT ID: ${segment.id} ---`);
                     const firstPassengerBaggage = offer.passengers[0]?.baggages || [];
                     console.log('[DEBUG] Baggage array for passenger 0:', JSON.stringify(firstPassengerBaggage));
-
                     const checkedBaggage = firstPassengerBaggage.find(b => b.type === 'checked');
                     const carryOnBaggage = firstPassengerBaggage.find(b => b.type === 'carry_on');
-
                     console.log('[DEBUG] Found checked baggage object:', checkedBaggage);
                     console.log('[DEBUG] Found carry-on baggage object:', carryOnBaggage);
-
                     const baggageString = checkedBaggage ? `${checkedBaggage.quantity} piece(s)` : 'No checked bag';
                     const cabinBaggageString = carryOnBaggage ? `${carryOnBaggage.quantity} piece(s)` : 'No carry-on';
-
                     console.log(`[DEBUG] Final Baggage String: "${baggageString}"`);
                     console.log(`[DEBUG] Final Cabin Baggage String: "${cabinBaggageString}"`);
                     console.log('--- END MAPPING ---');
-
                     const duration = segment.duration.replace('PT', '').replace('H', 'h ').replace('M', 'm').toLowerCase();
-
                     return {
-                        // ... other fields
                         baggage: baggageString,
                         cabin_baggage: cabinBaggageString,
-                        // ... other fields
                         img: segment.operating_carrier.logo_symbol_url || '',
                         flight_no: segment.operating_carrier_flight_number,
                         airline: segment.operating_carrier.name,
