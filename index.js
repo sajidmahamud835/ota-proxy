@@ -35,10 +35,11 @@ const smartApiHandler = async (req, res, next) => {
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
             });
 
-            console.log('[ADAPTER] Received response from iatalocal:', JSON.stringify(iataLocalResponse.data, null, 2));
+            // console.log('[ADAPTER] Received response from iatalocal:', JSON.stringify(iataLocalResponse.data, null, 2));
 
             const phpAppResponse = mapIataLocalToPhpResponse(iataLocalResponse.data);
             console.log('[ADAPTER] Successfully processed and mapped iatalocal response.');
+            console.log('[ADAPTER] Final response to PHP app:', JSON.stringify(phpAppResponse, null, 2));
 
             return res.status(200).json(phpAppResponse);
         } catch (error) {
