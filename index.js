@@ -12,65 +12,58 @@ const PORT = process.env.PORT || 3000;
 const upload = multer();
 
 // --- API Targets ---
-const PHPTRAVELS_TARGET = 'https://api.phptravels.com';
-const DUFFEL_API_ENDPOINT = 'https://api.duffel.com/air/offer_requests';
+const PHPTRAVELS_TARGET = 'https://api.phptravels.com'; // Fallback for all other modules
+const IATA_LOCAL_TARGET = 'http://ota-node-server-2-1.onrender.com/api'; // New native target
 
 // --- Middleware Setup ---
 app.use(morgan('dev'));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(upload.any()); // Use multer to handle form-data
+app.use(upload.any()); // Use multer to handle form-data from PHP cURL
 
-// The Smart Middleware
+// =========================================================================
+// The Smart Middleware: Intercepts and routes based on URL
+// =========================================================================
 const smartApiHandler = async (req, res, next) => {
-    if (req.originalUrl.includes('/flights/duffel/')) {
-        console.log('[ADAPTER] Intercepted a request for the Duffel module. Handling natively.');
-
-        const duffelApiKey = req.body.c1;
-        if (!duffelApiKey) {
-            console.error('[ADAPTER] Duffel API key not found in request body (expected `c1`).');
-            console.log('[DEBUG] Full request body received:', req.body);
-            return res.status(400).json({ error: 'Missing API credentials for Duffel module.' });
-        }
+    // --- THE FIX: Convert URL to lowercase for a robust, case-insensitive check ---
+    if (req.originalUrl.toLowerCase().includes('/flights/iatalocal/')) {
+        console.log('[ADAPTER] Intercepted a request for the iatalocal module. Handling natively.');
 
         try {
-            const duffelRequestPayload = mapPhpToDuffelRequest(req.body);
+            // 1. Map the request from PHP format to iatalocal format
+            const iataLocalRequestPayload = mapPhpToIataLocalRequest(req.body);
+            console.log('[ADAPTER] Mapped request to iatalocal format:', JSON.stringify(iataLocalRequestPayload, null, 2));
 
-            const duffelResponse = await axios.post(DUFFEL_API_ENDPOINT, duffelRequestPayload, {
+            // 2. Call the real iatalocal API
+            const iataLocalResponse = await axios.post(IATA_LOCAL_TARGET, iataLocalRequestPayload, {
                 headers: {
-                    'Accept-Encoding': 'gzip',
-                    'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'Duffel-Version': 'v1',
-                    'Authorization': `Bearer ${duffelApiKey}`
+                    'Accept': 'application/json',
                 }
             });
 
-            console.log('--- RAW DUFFEL API RESPONSE (START) ---');
-            console.log(JSON.stringify(duffelResponse.data, null, 2));
-            console.log('--- RAW DUFFEL API RESPONSE (END) ---');
-
-            const phpAppResponse = mapDuffelToPhpResponse(duffelResponse.data, req.body);
-
-            console.log('--- FINAL MAPPED RESPONSE to PHP (START) ---');
-            console.log(JSON.stringify(phpAppResponse, null, 2));
-            console.log('--- FINAL MAPPED RESPONSE to PHP (END) ---');
+            // 3. Map the complex iatalocal response back to the standard PHP format
+            const phpAppResponse = mapIataLocalToPhpResponse(iataLocalResponse.data);
+            console.log('[ADAPTER] Successfully processed and mapped iatalocal response.');
 
             return res.status(200).json(phpAppResponse);
 
         } catch (error) {
             const errorDetails = error.response ? error.response.data : error.message;
-            console.error('[ADAPTER] Error during Duffel API call:', JSON.stringify(errorDetails, null, 2));
-            return res.status(500).json([]);
+            console.error('[ADAPTER] Error during iatalocal API call:', JSON.stringify(errorDetails, null, 2));
+            return res.status(500).json([]); // Return empty array on error
         }
     }
 
+    // If it's not an iatalocal request, pass it to the phptravels proxy
     console.log(`[PROXY] Passing request for '${req.originalUrl}' to phptravels.com.`);
     next();
 };
 
+// Register our smart handler first
 app.use('/api', smartApiHandler);
 
+// The generic proxy is the fallback if next() is called
 app.use('/api', createProxyMiddleware({
     target: PHPTRAVELS_TARGET,
     changeOrigin: true,
@@ -78,94 +71,103 @@ app.use('/api', createProxyMiddleware({
 }));
 
 
-// MAPPING FUNCTIONS
-// =================
+// =========================================================================
+// MAPPING FUNCTIONS FOR IATA_LOCAL ADAPTER
+// =========================================================================
 
-function mapPhpToDuffelRequest(phpRequest) {
-    const passengers = [];
-    if (phpRequest.adults > 0) for (let i = 0; i < phpRequest.adults; i++) passengers.push({ type: 'adult' });
-    if (phpRequest.childrens > 0) for (let i = 0; i < phpRequest.childrens; i++) passengers.push({ type: 'child' });
-    if (phpRequest.infants > 0) for (let i = 0; i < phpRequest.infants; i++) passengers.push({ type: 'infant_without_seat' });
-
-    const departureDate = new Date(phpRequest.departure_date).toISOString().split('T')[0];
-
-    const slices = [{
-        origin: phpRequest.origin,
-        destination: phpRequest.destination,
-        departure_date: departureDate,
-    }];
-
-    if (phpRequest.triptypename === 'round' && phpRequest.return_date) {
-        const returnDate = new Date(phpRequest.return_date).toISOString().split('T')[0];
-        slices.push({
-            origin: phpRequest.destination,
-            destination: phpRequest.origin,
-            departure_date: returnDate,
-        });
-    }
-
-    return { data: { slices, passengers, cabin_class: phpRequest.class_type } };
+function formatDateForIataLocal(dateString) {
+    const date = new Date(dateString);
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = date.toLocaleString('en-US', { month: 'short' });
+    const year = date.getFullYear();
+    return `${day}-${month}-${year}`;
 }
 
-function mapDuffelToPhpResponse(duffelData, originalPhpRequest) {
-    if (!duffelData.data || !duffelData.data.offers) return [];
+function mapPhpToIataLocalRequest(phpRequest) {
+    const fromCode = phpRequest.origin;
+    const toCode = phpRequest.destination;
 
-    return duffelData.data.offers.map(offer => {
-        return {
-            segments: offer.slices.map(slice => {
-                return slice.segments.map(segment => {
-                    console.log(`\n--- MAPPING OFFER ID: ${offer.id}, SEGMENT ID: ${segment.id} ---`);
-                    const firstPassengerBaggage = offer.passengers[0]?.baggages || [];
-                    console.log('[DEBUG] Baggage array for passenger 0:', JSON.stringify(firstPassengerBaggage));
+    return {
+        is_combo: 0,
+        CMND: "_FLIGHTSEARCH_",
+        TRIP: phpRequest.triptypename === 'round' ? "RT" : "OW",
+        FROM: fromCode,
+        DEST: toCode,
+        JDT: formatDateForIataLocal(phpRequest.departure_date),
+        RDT: phpRequest.return_date ? formatDateForIataLocal(phpRequest.return_date) : "",
+        ACLASS: "Y",
+        AD: parseInt(phpRequest.adults, 10) || 0,
+        CH: parseInt(phpRequest.childrens, 10) || 0,
+        INF: parseInt(phpRequest.infants, 10) || 0,
+        Umrah: "0",
+    };
+}
 
-                    const checkedBaggage = firstPassengerBaggage.find(b => b.type === 'checked');
-                    const carryOnBaggage = firstPassengerBaggage.find(b => b.type === 'carry_on');
+function mapIataLocalToPhpResponse(iataResponse) {
+    if (!iataResponse.success || !iataResponse.data || !iataResponse.data.Trips) {
+        return [];
+    }
 
-                    console.log('[DEBUG] Found checked baggage object:', checkedBaggage);
-                    console.log('[DEBUG] Found carry-on baggage object:', carryOnBaggage);
+    const trips = iataResponse.data.Trips;
+    const itineraries = new Map();
 
-                    const baggageString = checkedBaggage ? `${checkedBaggage.quantity} piece(s)` : 'No checked bag';
-                    const cabinBaggageString = carryOnBaggage ? `${carryOnBaggage.quantity} piece(s)` : 'No carry-on';
+    trips.forEach(trip => {
+        const key = trip.fSoft;
+        if (!itineraries.has(key)) {
+            itineraries.set(key, { segments: [[], []] });
+        }
 
-                    console.log(`[DEBUG] Final Baggage String: "${baggageString}"`);
-                    console.log(`[DEBUG] Final Cabin Baggage String: "${cabinBaggageString}"`);
-                    console.log('--- END MAPPING ---');
+        const currentItinerary = itineraries.get(key);
+        const legIndex = trip.fReturn ? 1 : 0;
 
-                    const duration = segment.duration.replace('PT', '').replace('H', 'h ').replace('M', 'm').toLowerCase();
-
-                    return {
-                        baggage: baggageString,
-                        cabin_baggage: cabinBaggageString,
-                        img: segment.operating_carrier.logo_symbol_url || '',
-                        flight_no: segment.operating_carrier_flight_number,
-                        airline: segment.operating_carrier.name,
-                        class: offer.cabin_class,
-                        departure_airport: segment.origin.name,
-                        departure_time: segment.departing_at.substring(11, 16),
-                        departure_date: segment.departing_at.substring(0, 10),
-                        departure_code: segment.origin.iata_code,
-                        arrival_airport: segment.destination.name,
-                        arrival_date: segment.arriving_at.substring(0, 10),
-                        arrival_time: segment.arriving_at.substring(11, 16),
-                        arrival_code: segment.destination.iata_code,
-                        duration_time: duration,
-                        total_duration: offer.total_duration.replace('PT', '').replace('H', 'h ').replace('M', 'm').toLowerCase(),
-                        currency: originalPhpRequest.currency,
-                        actual_currency: offer.total_currency,
-                        price: offer.total_amount,
-                        actual_price: offer.total_amount,
-                        adult_price: offer.total_amount,
-                        child_price: "0",
-                        infant_price: "0",
-                        booking_data: { offer_id: offer.id },
-                        supplier: "duffel",
-                        type: originalPhpRequest.triptypename,
-                        refundable: !offer.payment_requirements.requires_instant_payment,
-                    };
-                });
-            })
-        };
+        trip.fLegs.forEach(leg => {
+            const phpSegment = {
+                img: `https://daisycon.io/images/airline/?width=300&height=150&color=ffffff&iata=${leg.xACode}`,
+                flight_no: leg.xFlight,
+                airline: trip.stAirline,
+                class: leg.xClass,
+                baggage: trip.fBag.replace('Baggage:', '').trim(),
+                cabin_baggage: "N/A",
+                departure_airport: leg.xFrom,
+                departure_time: leg.DTime.substring(11, 16),
+                departure_date: leg.DTime.substring(0, 10),
+                departure_code: leg.xFrom,
+                arrival_airport: leg.xDest,
+                arrival_date: leg.ATime.substring(0, 10),
+                arrival_time: leg.ATime.substring(11, 16),
+                arrival_code: leg.xDest,
+                duration_time: trip.fDur,
+                total_duration: trip.fDur,
+                currency: "BDT",
+                actual_currency: "BDT",
+                price: trip.fFare.toString(),
+                actual_price: trip.fFare.toString(),
+                adult_price: trip.fFare.toString(),
+                child_price: "0",
+                infant_price: "0",
+                booking_data: { fSoft: trip.fSoft, fGDSid: trip.fGDSid },
+                supplier: "iatalocal",
+                type: trip.fReturn ? "round" : "oneway",
+                refundable: trip.fRefund !== "NONREFUND",
+            };
+            currentItinerary.segments[legIndex].push(phpSegment);
+        });
     });
+
+    // For one-way trips, the second leg (index 1) will be empty. We must filter those out.
+    // We also need to filter out round-trip itineraries where one of the legs is missing.
+    const validItineraries = Array.from(itineraries.values()).filter(itinerary => {
+        const isRoundTrip = itinerary.segments[1].length > 0;
+        if (isRoundTrip) {
+            // For a round trip, both legs must have segments
+            return itinerary.segments[0].length > 0 && itinerary.segments[1].length > 0;
+        } else {
+            // For a one-way, only the first leg must have segments
+            return itinerary.segments[0].length > 0;
+        }
+    });
+
+    return validItineraries;
 }
 
 // Start server
