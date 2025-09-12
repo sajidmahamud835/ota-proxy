@@ -1,4 +1,3 @@
-// proxy-server.js
 require('dotenv').config();
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
@@ -12,14 +11,14 @@ const PORT = process.env.PORT || 3000;
 const upload = multer();
 
 // --- API Targets ---
-const PHPTRAVELS_TARGET = 'https://api.phptravels.com'; // Fallback for all other modules
-const IATA_LOCAL_TARGET = 'http://ota-node-server-2-1.onrender.com/api'; // New native target
+const PHPTRAVELS_TARGET = 'https://api.phptravels.com';
+const IATA_LOCAL_TARGET = 'http://ota-node-server-2-1.onrender.com/api';
 
 // --- Middleware Setup ---
 app.use(morgan('dev'));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(upload.any()); // Use multer to handle form-data from PHP cURL
+app.use(upload.any());
 
 // =========================================================================
 // The Smart Middleware
@@ -35,12 +34,8 @@ const smartApiHandler = async (req, res, next) => {
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
             });
 
-            // console.log('[ADAPTER] Received response from iatalocal:', JSON.stringify(iataLocalResponse.data, null, 2));
-
             const phpAppResponse = mapIataLocalToPhpResponse(iataLocalResponse.data);
             console.log('[ADAPTER] Successfully processed and mapped iatalocal response.');
-            console.log('[ADAPTER] Final response to PHP app:', JSON.stringify(phpAppResponse, null, 2));
-
             return res.status(200).json(phpAppResponse);
         } catch (error) {
             const errorDetails = error.response ? error.response.data : error.message;
@@ -65,31 +60,18 @@ app.use('/api', createProxyMiddleware({
 // MAPPING FUNCTIONS FOR IATA_LOCAL ADAPTER
 // =========================================================================
 
-/**
- * THE FIX: A robust function to convert 'YYYY-MM-DD' to 'DD-Mon-YYYY'.
- * This avoids the unreliable new Date() constructor for parsing.
- * @param {string} yyyyMmDd - The date string in YYYY-MM-DD format.
- * @returns {string} The formatted date string, e.g., "25-Sep-2024".
- */
 function convertDateToDDMonYYYY(yyyyMmDd) {
     if (!yyyyMmDd || typeof yyyyMmDd !== 'string') return "";
-
     const parts = yyyyMmDd.split('-');
-    if (parts.length !== 3) return ""; // Invalid format
-
+    if (parts.length !== 3) return "";
     const [year, month, day] = parts;
     const monthIndex = parseInt(month, 10) - 1;
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-    if (monthIndex < 0 || monthIndex > 11) return ""; // Invalid month
-
+    if (monthIndex < 0 || monthIndex > 11) return "";
     return `${day}-${months[monthIndex]}-${year}`;
 }
 
-
 function mapPhpToIataLocalRequest(phpRequest) {
-    // These values from your PHP app likely don't have the extra text anymore,
-    // but this code is safer as it handles both "DAC" and "Dhaka - DAC - BANGLADESH".
     const fromCode = (phpRequest.origin.split(' - ')[1] || phpRequest.origin).trim();
     const toCode = (phpRequest.destination.split(' - ')[1] || phpRequest.destination).trim();
 
@@ -99,7 +81,6 @@ function mapPhpToIataLocalRequest(phpRequest) {
         TRIP: phpRequest.triptypename === 'round' ? "RT" : "OW",
         FROM: fromCode,
         DEST: toCode,
-        // Use the new, reliable date conversion function
         JDT: convertDateToDDMonYYYY(phpRequest.departure_date),
         RDT: phpRequest.return_date ? convertDateToDDMonYYYY(phpRequest.return_date) : "",
         ACLASS: "Y",
@@ -157,21 +138,30 @@ function mapIataLocalToPhpResponse(iataResponse) {
                 supplier: "iatalocal",
                 type: trip.fReturn ? "round" : "oneway",
                 refundable: trip.fRefund !== "NONREFUND",
+                // === FIX 1: Add the required properties with default values ===
+                redirect_url: "",
+                color: "#0d3981", // A default color
             };
             currentItinerary.segments[legIndex].push(phpSegment);
         });
     });
 
-    const validItineraries = Array.from(itineraries.values()).filter(itinerary => {
+    // === FIX 2: Filter and re-map the structure to match what PHP expects ===
+    const finalResponse = [];
+    itineraries.forEach(itinerary => {
         const isRoundTrip = itinerary.segments[1].length > 0;
-        if (isRoundTrip) {
-            return itinerary.segments[0].length > 0 && itinerary.segments[1].length > 0;
-        } else {
-            return itinerary.segments[0].length > 0;
+        const hasOutbound = itinerary.segments[0].length > 0;
+
+        if (isRoundTrip && hasOutbound) {
+            // This is a valid round trip, return it with both segments
+            finalResponse.push({ segments: itinerary.segments });
+        } else if (!isRoundTrip && hasOutbound) {
+            // This is a valid one-way trip, return it with ONLY the outbound segment
+            finalResponse.push({ segments: [itinerary.segments[0]] });
         }
     });
 
-    return validItineraries;
+    return finalResponse;
 }
 
 // Start server
