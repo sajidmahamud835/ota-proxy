@@ -4,41 +4,30 @@ const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const morgan = require('morgan');
 const bodyParser = require('body-parser');
-const axios = require('axios'); // For making direct API calls
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- API Targets ---
-const PHPTRAVELS_TARGET = 'https://api.phptravels.com'; // Fallback for other modules
-const DUFFEL_API_ENDPOINT = 'https://api.duffel.com/air/offer_requests'; // The real Duffel API
+const PHPTRAVELS_TARGET = 'https://api.phptravels.com';
+const DUFFEL_API_ENDPOINT = 'https://api.duffel.com/air/offer_requests';
 
-// --- Middleware Setup ---
 app.use(morgan('dev'));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// =========================================================================
-// The Smart Middleware: Intercepts and routes based on URL
-// This runs for ALL requests starting with '/api'
-// =========================================================================
+// The Smart Middleware
 const smartApiHandler = async (req, res, next) => {
-    // Check if this request is for the 'duffel' module
     if (req.originalUrl.includes('/flights/duffel/')) {
         console.log('[ADAPTER] Intercepted a request for the Duffel module. Handling natively.');
-
-        // Extract the Duffel API Key from the request body (sent as 'c1' by PHP)
         const duffelApiKey = req.body.c1;
         if (!duffelApiKey) {
-            console.error('[ADAPTER] Duffel API key not found in request body (expected in `c1`).');
+            console.error('[ADAPTER] Duffel API key not found in request body.');
             return res.status(400).json({ error: 'Missing API credentials for Duffel module.' });
         }
 
         try {
-            // 1. Map the request from PHP format to Duffel format
             const duffelRequestPayload = mapPhpToDuffelRequest(req.body);
-
-            // 2. Call the real Duffel API with the extracted key
             const duffelResponse = await axios.post(DUFFEL_API_ENDPOINT, duffelRequestPayload, {
                 headers: {
                     'Accept-Encoding': 'gzip',
@@ -49,47 +38,45 @@ const smartApiHandler = async (req, res, next) => {
                 }
             });
 
-            // 3. Map the rich Duffel response back to the standard PHP format
+            // <-- DEBUG 1: Log the entire raw response from Duffel
+            console.log('--- RAW DUFFEL API RESPONSE (START) ---');
+            console.log(JSON.stringify(duffelResponse.data, null, 2)); // Pretty-print the JSON
+            console.log('--- RAW DUFFEL API RESPONSE (END) ---');
+
             const phpAppResponse = mapDuffelToPhpResponse(duffelResponse.data, req.body);
 
-            console.log('[ADAPTER] Successfully processed Duffel response. Sending to client.');
-            // Send the response and STOP further processing (do not call next())
+            // <-- DEBUG 3: Log the final object we are sending back to PHP
+            console.log('--- FINAL MAPPED RESPONSE to PHP (START) ---');
+            console.log(JSON.stringify(phpAppResponse, null, 2));
+            console.log('--- FINAL MAPPED RESPONSE to PHP (END) ---');
+
             return res.status(200).json(phpAppResponse);
 
         } catch (error) {
             const errorDetails = error.response ? error.response.data : error.message;
             console.error('[ADAPTER] Error during Duffel API call:', JSON.stringify(errorDetails, null, 2));
-            // Return an empty array so the PHP app's search doesn't break
             return res.status(500).json([]);
         }
     }
 
-    // If we're here, it's NOT a Duffel request. Pass control to the next middleware (the proxy).
     console.log(`[PROXY] Passing request for '${req.originalUrl}' to phptravels.com.`);
     next();
 };
 
-// =========================================================================
-// Registering the Middleware and Proxy
-// =========================================================================
-
-// 1. First, register our smart handler for all '/api' routes
 app.use('/api', smartApiHandler);
 
-// 2. Then, register the generic proxy. This will only be reached if smartApiHandler calls next().
 app.use('/api', createProxyMiddleware({
     target: PHPTRAVELS_TARGET,
     changeOrigin: true,
-    pathRewrite: {
-        '^/api': '', // Remove /api prefix for phptravels.com
-    },
+    pathRewrite: { '^/api': '' },
 }));
 
-// =========================================================================
-// Mapping Functions (Helper logic for the adapter)
-// =========================================================================
+
+// MAPPING FUNCTIONS
+// =================
 
 function mapPhpToDuffelRequest(phpRequest) {
+    // ... (This function remains unchanged)
     const passengers = [];
     if (phpRequest.adults > 0) for (let i = 0; i < phpRequest.adults; i++) passengers.push({ type: 'adult' });
     if (phpRequest.childrens > 0) for (let i = 0; i < phpRequest.childrens; i++) passengers.push({ type: 'child' });
@@ -108,18 +95,36 @@ function mapDuffelToPhpResponse(duffelData, originalPhpRequest) {
         return {
             segments: offer.slices.map(slice => {
                 return slice.segments.map(segment => {
-                    const firstPassengerBaggage = offer.passengers[0].baggages || [];
+
+                    // <-- DEBUG 2: Log the specific baggage data we are trying to map
+                    console.log(`\n--- MAPPING OFFER ID: ${offer.id}, SEGMENT ID: ${segment.id} ---`);
+                    const firstPassengerBaggage = offer.passengers[0]?.baggages || [];
+                    console.log('[DEBUG] Baggage array for passenger 0:', JSON.stringify(firstPassengerBaggage));
+
                     const checkedBaggage = firstPassengerBaggage.find(b => b.type === 'checked');
                     const carryOnBaggage = firstPassengerBaggage.find(b => b.type === 'carry_on');
+
+                    console.log('[DEBUG] Found checked baggage object:', checkedBaggage);
+                    console.log('[DEBUG] Found carry-on baggage object:', carryOnBaggage);
+
+                    const baggageString = checkedBaggage ? `${checkedBaggage.quantity} piece(s)` : 'No checked bag';
+                    const cabinBaggageString = carryOnBaggage ? `${carryOnBaggage.quantity} piece(s)` : 'No carry-on';
+
+                    console.log(`[DEBUG] Final Baggage String: "${baggageString}"`);
+                    console.log(`[DEBUG] Final Cabin Baggage String: "${cabinBaggageString}"`);
+                    console.log('--- END MAPPING ---');
+
                     const duration = segment.duration.replace('PT', '').replace('H', 'h ').replace('M', 'm').toLowerCase();
 
                     return {
+                        // ... other fields
+                        baggage: baggageString,
+                        cabin_baggage: cabinBaggageString,
+                        // ... other fields
                         img: segment.operating_carrier.logo_symbol_url || '',
                         flight_no: segment.operating_carrier_flight_number,
                         airline: segment.operating_carrier.name,
                         class: offer.cabin_class,
-                        baggage: checkedBaggage ? `${checkedBaggage.quantity} piece(s)` : 'No checked bag',
-                        cabin_baggage: carryOnBaggage ? `${carryOnBaggage.quantity} piece(s)` : 'No carry-on',
                         departure_airport: segment.origin.name,
                         departure_time: segment.departing_at.substring(11, 16),
                         departure_date: segment.departing_at.substring(0, 10),
