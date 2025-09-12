@@ -1,3 +1,4 @@
+// proxy-server.js
 require('dotenv').config();
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
@@ -34,7 +35,7 @@ const smartApiHandler = async (req, res, next) => {
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
             });
 
-            const phpAppResponse = mapIataLocalToPhpResponse(iataLocalResponse.data);
+            const phpAppResponse = mapIataLocalToPhpResponse(iataLocalResponse.data, req.body.triptypename);
             console.log('[ADAPTER] Successfully processed and mapped iatalocal response.');
             return res.status(200).json(phpAppResponse);
         } catch (error) {
@@ -92,77 +93,98 @@ function mapPhpToIataLocalRequest(phpRequest) {
 }
 
 
-function mapIataLocalToPhpResponse(iataResponse) {
+/**
+ * Maps an individual trip object from iatalocal to a segment array for PHP.
+ */
+function createPhpSegments(trip) {
+    return trip.fLegs.map(leg => ({
+        // FIX 2: Use Duffel's consistent logo URL format
+        img: `https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/v1/350x150/${leg.xACode}.svg`,
+        flight_no: leg.xFlight,
+        airline: trip.stAirline,
+        class: leg.xClass,
+        baggage: trip.fBag.replace('Baggage:', '').trim(),
+        cabin_baggage: "N/A",
+        departure_airport: leg.xFrom,
+        departure_time: leg.DTime.substring(11, 16),
+        departure_date: leg.DTime.substring(0, 10),
+        departure_code: leg.xFrom,
+        arrival_airport: leg.xDest,
+        arrival_date: leg.ATime.substring(0, 10),
+        arrival_time: leg.ATime.substring(11, 16),
+        arrival_code: leg.xDest,
+        duration_time: trip.fDur,
+        total_duration: trip.fDur,
+        currency: "BDT",
+        actual_currency: "BDT",
+        price: trip.fFare.toString(),
+        actual_price: trip.fFare.toString(),
+        adult_price: trip.fFare.toString(),
+        child_price: "0",
+        infant_price: "0",
+        booking_data: { fSoft: trip.fSoft, fGDSid: trip.fGDSid, fAMYid: trip.fAMYid },
+        supplier: "iatalocal",
+        type: trip.fReturn ? "round" : "oneway",
+        refundable: trip.fRefund !== "NONREFUND",
+        redirect_url: "",
+        color: "#0d3981",
+    }));
+}
+
+
+/**
+ * NEW MAPPING LOGIC: Correctly groups outbound and inbound flights.
+ */
+function mapIataLocalToPhpResponse(iataResponse, tripType) {
     if (!iataResponse.success || !iataResponse.data || !iataResponse.data.Trips) {
         return [];
     }
 
     const trips = iataResponse.data.Trips;
-    const itineraries = new Map();
 
+    // FIX 1: If it's a one-way trip, the logic is simple.
+    if (tripType === 'oneway') {
+        return trips.map(trip => ({
+            segments: [createPhpSegments(trip)]
+        }));
+    }
+
+    // For round trips, we need to pair them up.
+    const outboundFlights = new Map();
+    const inboundFlights = new Map();
+
+    // Separate all flights into outbound and inbound maps
     trips.forEach(trip => {
-        const key = trip.fSoft;
-        if (!itineraries.has(key)) {
-            itineraries.set(key, { segments: [[], []] });
-        }
-
-        const currentItinerary = itineraries.get(key);
-        const legIndex = trip.fReturn ? 1 : 0;
-
-        trip.fLegs.forEach(leg => {
-            const phpSegment = {
-                img: `https://daisycon.io/images/airline/?width=300&height=150&color=ffffff&iata=${leg.xACode}`,
-                flight_no: leg.xFlight,
-                airline: trip.stAirline,
-                class: leg.xClass,
-                baggage: trip.fBag.replace('Baggage:', '').trim(),
-                cabin_baggage: "N/A",
-                departure_airport: leg.xFrom,
-                departure_time: leg.DTime.substring(11, 16),
-                departure_date: leg.DTime.substring(0, 10),
-                departure_code: leg.xFrom,
-                arrival_airport: leg.xDest,
-                arrival_date: leg.ATime.substring(0, 10),
-                arrival_time: leg.ATime.substring(11, 16),
-                arrival_code: leg.xDest,
-                duration_time: trip.fDur,
-                total_duration: trip.fDur,
-                currency: "BDT",
-                actual_currency: "BDT",
-                price: trip.fFare.toString(),
-                actual_price: trip.fFare.toString(),
-                adult_price: trip.fFare.toString(),
-                child_price: "0",
-                infant_price: "0",
-                booking_data: { fSoft: trip.fSoft, fGDSid: trip.fGDSid },
-                supplier: "iatalocal",
-                type: trip.fReturn ? "round" : "oneway",
-                refundable: trip.fRefund !== "NONREFUND",
-                // === FIX 1: Add the required properties with default values ===
-                redirect_url: "",
-                color: "#0d3981", // A default color
-            };
-            currentItinerary.segments[legIndex].push(phpSegment);
-        });
-    });
-
-    // === FIX 2: Filter and re-map the structure to match what PHP expects ===
-    const finalResponse = [];
-    itineraries.forEach(itinerary => {
-        const isRoundTrip = itinerary.segments[1].length > 0;
-        const hasOutbound = itinerary.segments[0].length > 0;
-
-        if (isRoundTrip && hasOutbound) {
-            // This is a valid round trip, return it with both segments
-            finalResponse.push({ segments: itinerary.segments });
-        } else if (!isRoundTrip && hasOutbound) {
-            // This is a valid one-way trip, return it with ONLY the outbound segment
-            finalResponse.push({ segments: [itinerary.segments[0]] });
+        // Use a composite key to uniquely identify a flight option
+        const key = `${trip.fSoft}-${trip.fGDSid}`;
+        if (trip.fReturn) {
+            inboundFlights.set(key, trip);
+        } else {
+            outboundFlights.set(key, trip);
         }
     });
 
-    return finalResponse;
+    const finalItineraries = [];
+
+    // Iterate through all outbound flights and find their matching inbound partner
+    outboundFlights.forEach((outboundTrip, key) => {
+        if (inboundFlights.has(key)) {
+            const inboundTrip = inboundFlights.get(key);
+
+            // Create the segments for each leg
+            const outboundSegments = createPhpSegments(outboundTrip);
+            const inboundSegments = createPhpSegments(inboundTrip);
+
+            // Combine them into one valid itinerary
+            finalItineraries.push({
+                segments: [outboundSegments, inboundSegments]
+            });
+        }
+    });
+
+    return finalItineraries;
 }
+
 
 // Start server
 app.listen(PORT, () => {
