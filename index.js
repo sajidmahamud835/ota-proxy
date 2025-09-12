@@ -92,12 +92,6 @@ function mapPhpToIataLocalRequest(phpRequest) {
     };
 }
 
-
-/**
- * Converts total minutes into HH:MM format.
- * @param {number} totalMinutes - The total duration in minutes (from fDursec).
- * @returns {string} The formatted duration string, e.g., "12:01".
- */
 function formatDuration(totalMinutes) {
     if (isNaN(totalMinutes)) return "00:00";
     const hours = Math.floor(totalMinutes / 60);
@@ -107,17 +101,11 @@ function formatDuration(totalMinutes) {
     return `${paddedHours}:${paddedMinutes}`;
 }
 
-
-/**
- * Maps an individual trip object from iatalocal to a segment array for PHP.
- */
 function createPhpSegments(trip) {
-    // FIX 2: Calculate the duration in HH:MM format from fDursec
     const formattedDuration = formatDuration(trip.fDursec);
 
     return trip.fLegs.map(leg => ({
-        // FIX 1: Use the correct Duffel logo URL format with the main airline code
-        img: `https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/v1/350x150/${trip.stAirCode}.svg`,
+        img: trip.stAirCode,
         flight_no: leg.xFlight,
         airline: trip.stAirline,
         class: leg.xClass,
@@ -131,8 +119,8 @@ function createPhpSegments(trip) {
         arrival_date: leg.ATime.substring(0, 10),
         arrival_time: leg.ATime.substring(11, 16),
         arrival_code: leg.xDest,
-        duration_time: formattedDuration, // Use the formatted duration
-        total_duration: formattedDuration, // Use the same formatted duration
+        duration_time: formattedDuration,
+        total_duration: formattedDuration,
         currency: "BDT",
         actual_currency: "BDT",
         price: trip.fFare.toString(),
@@ -140,7 +128,7 @@ function createPhpSegments(trip) {
         adult_price: trip.fFare.toString(),
         child_price: "0",
         infant_price: "0",
-        booking_data: { fSoft: trip.fSoft, fGDSid: trip.fGDSid, fAMYid: trip.fAMYid },
+        booking_data: { fSoft: trip.fSoft, fGDSid: trip.fGDSid, fid: trip.fAMYid },
         supplier: "iatalocal",
         type: trip.fReturn ? "round" : "oneway",
         refundable: trip.fRefund !== "NONREFUND",
@@ -148,7 +136,6 @@ function createPhpSegments(trip) {
         color: "#0d3981",
     }));
 }
-
 
 function mapIataLocalToPhpResponse(iataResponse, tripType) {
     if (!iataResponse.success || !iataResponse.data || !iataResponse.data.Trips) {
@@ -191,7 +178,6 @@ function mapIataLocalToPhpResponse(iataResponse, tripType) {
 
     return finalItineraries;
 }
-
 
 // Start server
 app.listen(PORT, () => {
