@@ -49,7 +49,7 @@ const smartApiHandler = async (req, res, next) => {
                     'Accept-Encoding': 'gzip',
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'Duffel-Version': 'v1',
+                    'Duffel-Version': 'v2',
                     'Authorization': `Bearer ${duffelApiKey}`
                 }
             });
