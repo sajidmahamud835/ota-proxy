@@ -162,16 +162,17 @@ function createPhpSegments(trip) {
         adult_price: trip.fFare.toString(),
         child_price: "0",
         infant_price: "0",
-        booking_data: { fSoft: trip.fSoft, fGDSid: trip.fGDSid, fid: trip.fAMYid },
+        booking_data: {
+            booking_id: trip.fAMYid,
+            fSoft: trip.fSoft, fGDSid: trip.fGDSid, transit_duration: trip.fTransit1 || "",
+            aircraft_model: trip.fModel || "",
+            source: trip.csource || "GDS", // e.g., GDS, NDC, LCC
+        },
         supplier: "iatalocal",
         type: trip.fReturn ? "round" : "oneway",
         refundable: trip.fRefund !== "NONREFUND",
         redirect_url: "",
         color: "#0d3981",
-        // FIX 1: Add missing important fields
-        transit_duration: trip.fTransit1 || "",
-        aircraft_model: trip.fModel || "",
-        source: trip.csource || "GDS", // e.g., GDS, NDC, LCC
     }));
 }
 
