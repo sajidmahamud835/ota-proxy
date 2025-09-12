@@ -1,4 +1,3 @@
-// proxy-server.js
 require('dotenv').config();
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
@@ -13,7 +12,8 @@ const upload = multer();
 
 // --- API Targets ---
 const PHPTRAVELS_TARGET = 'https://api.phptravels.com';
-const IATA_LOCAL_TARGET = 'http://ota-node-server-2-1.onrender.com/api';
+const IATA_LOCAL_BASE_URL = 'http://ota-node-server-2-1.onrender.com';
+const IATA_LOCAL_API_TARGET = `${IATA_LOCAL_BASE_URL}/api`;
 
 // --- Middleware Setup ---
 app.use(morgan('dev'));
@@ -22,7 +22,39 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use(upload.any());
 
 // =========================================================================
-// The Smart Middleware
+// NEW: Status Route for Health Checks
+// This route pings the iatalocal server and reports its status.
+// =========================================================================
+app.get('/status', async (req, res) => {
+    const startTime = Date.now();
+    try {
+        // Send a GET request to the /ping endpoint of the iatalocal server
+        const pingResponse = await axios.get(`${IATA_LOCAL_BASE_URL}/ping`);
+        const latency = Date.now() - startTime;
+
+        res.status(200).json({
+            service: 'iatalocal',
+            status: 'ok',
+            timestamp: new Date().toISOString(),
+            latency: `${latency}ms`,
+            response: pingResponse.data,
+        });
+    } catch (error) {
+        const latency = Date.now() - startTime;
+        console.error('[STATUS] Error pinging iatalocal server:', error.message);
+        res.status(503).json({ // 503 Service Unavailable
+            service: 'iatalocal',
+            status: 'error',
+            timestamp: new Date().toISOString(),
+            latency: `${latency}ms`,
+            error: error.message,
+        });
+    }
+});
+
+
+// =========================================================================
+// The Smart Middleware for /api routes
 // =========================================================================
 const smartApiHandler = async (req, res, next) => {
     if (req.originalUrl.toLowerCase().includes('/flights/iatalocal/')) {
@@ -31,7 +63,7 @@ const smartApiHandler = async (req, res, next) => {
             const iataLocalRequestPayload = mapPhpToIataLocalRequest(req.body);
             console.log('[ADAPTER] Mapped request to iatalocal format:', JSON.stringify(iataLocalRequestPayload, null, 2));
 
-            const iataLocalResponse = await axios.post(IATA_LOCAL_TARGET, iataLocalRequestPayload, {
+            const iataLocalResponse = await axios.post(IATA_LOCAL_API_TARGET, iataLocalRequestPayload, {
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
             });
 
@@ -123,24 +155,28 @@ function createPhpSegments(trip) {
         total_duration: formattedDuration,
         currency: "BDT",
         actual_currency: "BDT",
+        // Total fare for display
         price: trip.fFare.toString(),
-        actual_price: trip.fFare.toString(),
+        // FIX 2: Map the Base Fare to actual_price
+        actual_price: (trip.fBFare || 0).toString(),
         adult_price: trip.fFare.toString(),
         child_price: "0",
         infant_price: "0",
-        booking_data: { fSoft: trip.fSoft, fGDSid: trip.fGDSid, fid: trip.fAMYid },
+        booking_data: { fSoft: trip.fSoft, fGDSid: trip.fGDSid, fAMYid: trip.fAMYid },
         supplier: "iatalocal",
         type: trip.fReturn ? "round" : "oneway",
         refundable: trip.fRefund !== "NONREFUND",
         redirect_url: "",
         color: "#0d3981",
+        // FIX 1: Add missing important fields
+        transit_duration: trip.fTransit1 || "",
+        aircraft_model: trip.fModel || "",
+        source: trip.csource || "GDS", // e.g., GDS, NDC, LCC
     }));
 }
 
 function mapIataLocalToPhpResponse(iataResponse, tripType) {
-    if (!iataResponse.success || !iataResponse.data || !iataResponse.data.Trips) {
-        return [];
-    }
+    if (!iataResponse.success || !iataResponse.data || !iataResponse.data.Trips) return [];
 
     const trips = iataResponse.data.Trips;
 
@@ -155,24 +191,18 @@ function mapIataLocalToPhpResponse(iataResponse, tripType) {
 
     trips.forEach(trip => {
         const key = `${trip.fSoft}-${trip.fGDSid}`;
-        if (trip.fReturn) {
-            inboundFlights.set(key, trip);
-        } else {
-            outboundFlights.set(key, trip);
-        }
+        if (trip.fReturn) inboundFlights.set(key, trip);
+        else outboundFlights.set(key, trip);
     });
 
     const finalItineraries = [];
-
     outboundFlights.forEach((outboundTrip, key) => {
         if (inboundFlights.has(key)) {
             const inboundTrip = inboundFlights.get(key);
             const outboundSegments = createPhpSegments(outboundTrip);
             const inboundSegments = createPhpSegments(inboundTrip);
 
-            finalItineraries.push({
-                segments: [outboundSegments, inboundSegments]
-            });
+            finalItineraries.push({ segments: [outboundSegments, inboundSegments] });
         }
     });
 
