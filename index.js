@@ -5,11 +5,11 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const morgan = require('morgan');
 const bodyParser = require('body-parser');
 const axios = require('axios');
-const multer = require('multer'); // <-- Import multer
+const multer = require('multer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const upload = multer(); // <-- Initialize multer
+const upload = multer();
 
 // --- API Targets ---
 const PHPTRAVELS_TARGET = 'https://api.phptravels.com';
@@ -19,37 +19,29 @@ const DUFFEL_API_ENDPOINT = 'https://api.duffel.com/air/offer_requests';
 app.use(morgan('dev'));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(upload.any()); // Use multer to handle form-data
 
-// =========================================================================
-// THE FIX: Use multer to parse any multipart/form-data.
-// This needs to run BEFORE our smartApiHandler. It will populate req.body.
-// We use .any() because we just want to parse the fields, not save any files.
-// =========================================================================
-app.use(upload.any());
-
-
-// The Smart Middleware (unchanged logic, but will now have a valid req.body)
+// The Smart Middleware
 const smartApiHandler = async (req, res, next) => {
     if (req.originalUrl.includes('/flights/duffel/')) {
-        console.log('[ADAPTER] Intercepted Duffel request. Handling natively.');
+        console.log('[ADAPTER] Intercepted a request for the Duffel module. Handling natively.');
 
-        // This line should now work because multer has populated req.body
         const duffelApiKey = req.body.c1;
-
         if (!duffelApiKey) {
             console.error('[ADAPTER] Duffel API key not found in request body (expected `c1`).');
-            console.log('[DEBUG] Full request body received:', req.body); // Log the body to see what we got
+            console.log('[DEBUG] Full request body received:', req.body);
             return res.status(400).json({ error: 'Missing API credentials for Duffel module.' });
         }
 
         try {
             const duffelRequestPayload = mapPhpToDuffelRequest(req.body);
+
             const duffelResponse = await axios.post(DUFFEL_API_ENDPOINT, duffelRequestPayload, {
                 headers: {
                     'Accept-Encoding': 'gzip',
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'Duffel-Version': 'v2',
+                    'Duffel-Version': 'v1',
                     'Authorization': `Bearer ${duffelApiKey}`
                 }
             });
@@ -86,16 +78,32 @@ app.use('/api', createProxyMiddleware({
 }));
 
 
-// MAPPING FUNCTIONS (with debugging logs from before)
+// MAPPING FUNCTIONS
+// =================
+
 function mapPhpToDuffelRequest(phpRequest) {
     const passengers = [];
     if (phpRequest.adults > 0) for (let i = 0; i < phpRequest.adults; i++) passengers.push({ type: 'adult' });
     if (phpRequest.childrens > 0) for (let i = 0; i < phpRequest.childrens; i++) passengers.push({ type: 'child' });
     if (phpRequest.infants > 0) for (let i = 0; i < phpRequest.infants; i++) passengers.push({ type: 'infant_without_seat' });
-    const slices = [{ origin: phpRequest.origin, destination: phpRequest.destination, departure_date: phpRequest.departure_date }];
+
+    const departureDate = new Date(phpRequest.departure_date).toISOString().split('T')[0];
+
+    const slices = [{
+        origin: phpRequest.origin,
+        destination: phpRequest.destination,
+        departure_date: departureDate,
+    }];
+
     if (phpRequest.triptypename === 'round' && phpRequest.return_date) {
-        slices.push({ origin: phpRequest.destination, destination: phpRequest.origin, departure_date: phpRequest.return_date });
+        const returnDate = new Date(phpRequest.return_date).toISOString().split('T')[0];
+        slices.push({
+            origin: phpRequest.destination,
+            destination: phpRequest.origin,
+            departure_date: returnDate,
+        });
     }
+
     return { data: { slices, passengers, cabin_class: phpRequest.class_type } };
 }
 
@@ -109,16 +117,22 @@ function mapDuffelToPhpResponse(duffelData, originalPhpRequest) {
                     console.log(`\n--- MAPPING OFFER ID: ${offer.id}, SEGMENT ID: ${segment.id} ---`);
                     const firstPassengerBaggage = offer.passengers[0]?.baggages || [];
                     console.log('[DEBUG] Baggage array for passenger 0:', JSON.stringify(firstPassengerBaggage));
+
                     const checkedBaggage = firstPassengerBaggage.find(b => b.type === 'checked');
                     const carryOnBaggage = firstPassengerBaggage.find(b => b.type === 'carry_on');
+
                     console.log('[DEBUG] Found checked baggage object:', checkedBaggage);
                     console.log('[DEBUG] Found carry-on baggage object:', carryOnBaggage);
+
                     const baggageString = checkedBaggage ? `${checkedBaggage.quantity} piece(s)` : 'No checked bag';
                     const cabinBaggageString = carryOnBaggage ? `${carryOnBaggage.quantity} piece(s)` : 'No carry-on';
+
                     console.log(`[DEBUG] Final Baggage String: "${baggageString}"`);
                     console.log(`[DEBUG] Final Cabin Baggage String: "${cabinBaggageString}"`);
                     console.log('--- END MAPPING ---');
+
                     const duration = segment.duration.replace('PT', '').replace('H', 'h ').replace('M', 'm').toLowerCase();
+
                     return {
                         baggage: baggageString,
                         cabin_baggage: cabinBaggageString,
