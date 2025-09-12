@@ -162,7 +162,7 @@ function createPhpSegments(trip) {
         adult_price: trip.fFare.toString(),
         child_price: "0",
         infant_price: "0",
-        booking_data: { fSoft: trip.fSoft, fGDSid: trip.fGDSid, fAMYid: trip.fAMYid },
+        booking_data: { fSoft: trip.fSoft, fGDSid: trip.fGDSid, fid: trip.fAMYid },
         supplier: "iatalocal",
         type: trip.fReturn ? "round" : "oneway",
         refundable: trip.fRefund !== "NONREFUND",
