@@ -94,12 +94,30 @@ function mapPhpToIataLocalRequest(phpRequest) {
 
 
 /**
+ * Converts total minutes into HH:MM format.
+ * @param {number} totalMinutes - The total duration in minutes (from fDursec).
+ * @returns {string} The formatted duration string, e.g., "12:01".
+ */
+function formatDuration(totalMinutes) {
+    if (isNaN(totalMinutes)) return "00:00";
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    const paddedHours = String(hours).padStart(2, '0');
+    const paddedMinutes = String(minutes).padStart(2, '0');
+    return `${paddedHours}:${paddedMinutes}`;
+}
+
+
+/**
  * Maps an individual trip object from iatalocal to a segment array for PHP.
  */
 function createPhpSegments(trip) {
+    // FIX 2: Calculate the duration in HH:MM format from fDursec
+    const formattedDuration = formatDuration(trip.fDursec);
+
     return trip.fLegs.map(leg => ({
-        // FIX 2: Use Duffel's consistent logo URL format
-        img: `https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/v1/350x150/${leg.xACode}.svg`,
+        // FIX 1: Use the correct Duffel logo URL format with the main airline code
+        img: `https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/v1/350x150/${trip.stAirCode}.svg`,
         flight_no: leg.xFlight,
         airline: trip.stAirline,
         class: leg.xClass,
@@ -113,8 +131,8 @@ function createPhpSegments(trip) {
         arrival_date: leg.ATime.substring(0, 10),
         arrival_time: leg.ATime.substring(11, 16),
         arrival_code: leg.xDest,
-        duration_time: trip.fDur,
-        total_duration: trip.fDur,
+        duration_time: formattedDuration, // Use the formatted duration
+        total_duration: formattedDuration, // Use the same formatted duration
         currency: "BDT",
         actual_currency: "BDT",
         price: trip.fFare.toString(),
@@ -132,9 +150,6 @@ function createPhpSegments(trip) {
 }
 
 
-/**
- * NEW MAPPING LOGIC: Correctly groups outbound and inbound flights.
- */
 function mapIataLocalToPhpResponse(iataResponse, tripType) {
     if (!iataResponse.success || !iataResponse.data || !iataResponse.data.Trips) {
         return [];
@@ -142,20 +157,16 @@ function mapIataLocalToPhpResponse(iataResponse, tripType) {
 
     const trips = iataResponse.data.Trips;
 
-    // FIX 1: If it's a one-way trip, the logic is simple.
     if (tripType === 'oneway') {
         return trips.map(trip => ({
             segments: [createPhpSegments(trip)]
         }));
     }
 
-    // For round trips, we need to pair them up.
     const outboundFlights = new Map();
     const inboundFlights = new Map();
 
-    // Separate all flights into outbound and inbound maps
     trips.forEach(trip => {
-        // Use a composite key to uniquely identify a flight option
         const key = `${trip.fSoft}-${trip.fGDSid}`;
         if (trip.fReturn) {
             inboundFlights.set(key, trip);
@@ -166,16 +177,12 @@ function mapIataLocalToPhpResponse(iataResponse, tripType) {
 
     const finalItineraries = [];
 
-    // Iterate through all outbound flights and find their matching inbound partner
     outboundFlights.forEach((outboundTrip, key) => {
         if (inboundFlights.has(key)) {
             const inboundTrip = inboundFlights.get(key);
-
-            // Create the segments for each leg
             const outboundSegments = createPhpSegments(outboundTrip);
             const inboundSegments = createPhpSegments(inboundTrip);
 
-            // Combine them into one valid itinerary
             finalItineraries.push({
                 segments: [outboundSegments, inboundSegments]
             });
