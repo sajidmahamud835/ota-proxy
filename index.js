@@ -2,9 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const morgan = require('morgan');
-const bodyParser = require('body-parser');
 const axios = require('axios');
 const multer = require('multer');
+const bodyParser = require('body-parser');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,12 +17,10 @@ const IATA_LOCAL_API_TARGET = `${IATA_LOCAL_BASE_URL}/api`;
 
 // --- Middleware Setup ---
 app.use(morgan('dev'));
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(upload.any());
+app.use(upload.any()); // still needed for multipart
 
 // =========================================================================
-// NEW: Status Route for Health Checks
+// Status Route for Health Checks
 // =========================================================================
 app.get('/status', async (req, res) => {
     const startTime = Date.now();
@@ -51,10 +49,12 @@ app.get('/status', async (req, res) => {
 });
 
 // =========================================================================
-// Smart Middleware for /api routes (iatalocal only)
+// Smart Middleware for /api/flights/iatalocal ONLY
 // =========================================================================
-const smartApiHandler = async (req, res, next) => {
-    if (req.originalUrl.toLowerCase().includes('/flights/iatalocal/')) {
+app.use('/api/flights/iatalocal',
+    bodyParser.json(),
+    bodyParser.urlencoded({ extended: true }),
+    async (req, res) => {
         console.log('[ADAPTER] Intercepted iatalocal request.');
 
         try {
@@ -72,14 +72,7 @@ const smartApiHandler = async (req, res, next) => {
             console.error('[ADAPTER] Error during iatalocal API call:', JSON.stringify(errorDetails, null, 2));
             return res.status(500).json([]);
         }
-    }
-
-    // Pass other requests (Duffel etc.) to proxy
-    next();
-};
-
-
-app.use('/api', smartApiHandler);
+    });
 
 // =========================================================================
 // Proxy Middleware for PHPTravels (handles Duffel & others)
@@ -87,16 +80,7 @@ app.use('/api', smartApiHandler);
 app.use('/api', createProxyMiddleware({
     target: PHPTRAVELS_TARGET,
     changeOrigin: true,
-    pathRewrite: { '^/api': '' },
-    onProxyReq: (proxyReq, req) => {
-        // Re-inject body for POST requests
-        if (req.body && Object.keys(req.body).length > 0) {
-            const bodyData = JSON.stringify(req.body);
-            proxyReq.setHeader('Content-Type', 'application/json');
-            proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
-            proxyReq.write(bodyData);
-        }
-    }
+    pathRewrite: { '^/api': '' }
 }));
 
 // =========================================================================
