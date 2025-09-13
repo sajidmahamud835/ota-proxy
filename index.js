@@ -16,8 +16,11 @@ const IATA_LOCAL_API_TARGET = `${IATA_LOCAL_BASE_URL}/api`;
 // --- Middleware Setup ---
 app.use(morgan('dev'));
 
+// ✅ Apply JSON body parser ONLY for iatalocal requests
+app.use('/api/flights/iatalocal', bodyParser.json());
+
 // =========================================================================
-// NEW: Status Route for Health Checks
+// NEW: Status Route
 // =========================================================================
 app.get('/status', async (req, res) => {
     const startTime = Date.now();
@@ -51,42 +54,33 @@ app.get('/status', async (req, res) => {
 const smartApiHandler = async (req, res, next) => {
     if (req.originalUrl.toLowerCase().includes('/flights/iatalocal/')) {
         console.log('[ADAPTER] Intercepted iatalocal request. Handling natively.');
+        try {
+            const iataLocalRequestPayload = mapPhpToIataLocalRequest(req.body);
+            console.log('[ADAPTER] Mapped request to iatalocal format:', JSON.stringify(iataLocalRequestPayload, null, 2));
 
-        // Apply JSON body parsing only for iatalocal
-        bodyParser.json()(req, res, async (err) => {
-            if (err) {
-                console.error('[ADAPTER] Body parsing error:', err.message);
-                return res.status(400).json({ error: 'Invalid JSON' });
-            }
+            const iataLocalResponse = await axios.post(IATA_LOCAL_API_TARGET, iataLocalRequestPayload, {
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
+            });
 
-            try {
-                const iataLocalRequestPayload = mapPhpToIataLocalRequest(req.body);
-                console.log('[ADAPTER] Mapped request to iatalocal format:', JSON.stringify(iataLocalRequestPayload, null, 2));
-
-                const iataLocalResponse = await axios.post(IATA_LOCAL_API_TARGET, iataLocalRequestPayload, {
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
-                });
-
-                const phpAppResponse = mapIataLocalToPhpResponse(iataLocalResponse.data, req.body.triptypename);
-                console.log('[ADAPTER] Successfully processed and mapped iatalocal response.');
-                return res.status(200).json(phpAppResponse);
-            } catch (error) {
-                const errorDetails = error.response ? error.response.data : error.message;
-                console.error('[ADAPTER] Error during iatalocal API call:', errorDetails);
-                return res.status(500).json([]);
-            }
-        });
-    } else {
-        // ✅ For duffel and all other routes, don’t parse body → just proxy
-        console.log(`[PROXY] Passing request for '${req.originalUrl}' to phptravels.com.`);
-        next();
+            const phpAppResponse = mapIataLocalToPhpResponse(iataLocalResponse.data, req.body.triptypename);
+            console.log('[ADAPTER] Successfully processed and mapped iatalocal response.');
+            return res.status(200).json(phpAppResponse);
+        } catch (error) {
+            const errorDetails = error.response ? error.response.data : error.message;
+            console.error('[ADAPTER] Error during iatalocal API call:', errorDetails);
+            return res.status(500).json([]);
+        }
     }
+
+    // ✅ For duffel and others → just proxy
+    console.log(`[PROXY] Passing request for '${req.originalUrl}' to phptravels.com.`);
+    next();
 };
 
 app.use('/api', smartApiHandler);
 
 // =========================================================================
-// Proxy to PHPTravels for everything else
+// Proxy to PHPTravels
 // =========================================================================
 app.use('/api', createProxyMiddleware({
     target: PHPTRAVELS_TARGET,
