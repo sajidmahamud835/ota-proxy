@@ -143,6 +143,21 @@ function formatDuration(totalMinutes) {
 function createPhpSegments(trip) {
     const formattedDuration = formatDuration(trip.fDursec);
 
+    // --- Apply discount + fee ---
+    let baseFare = trip.fFare || 0;
+    let finalFare = baseFare;
+
+    if (trip.fRouteType === 'DOM') {
+        // 4% discount + 100 BDT fee
+        finalFare = baseFare * (1 - 0.04) + 100;
+    } else {
+        // 6% discount + max(1000, 2%) fee
+        const fee = Math.max(1000, baseFare * 0.02);
+        finalFare = baseFare * (1 - 0.06) + fee;
+    }
+
+    finalFare = Math.round(finalFare);
+
     return trip.fLegs.map(leg => ({
         img: trip.stAirCode,
         flight_no: leg.xFlight,
@@ -162,11 +177,11 @@ function createPhpSegments(trip) {
         total_duration: formattedDuration,
         currency: "BDT",
         actual_currency: "BDT",
-        price: trip.fFare.toString(),
-        actual_price: (trip.fFare || 0).toString(),
-        adult_price: trip.fFare.toString(),
-        child_price: trip.fFare.toString(),
-        infant_price: trip.fFare.toString(),
+        price: finalFare.toString(),
+        actual_price: baseFare.toString(),
+        adult_price: finalFare.toString(),
+        child_price: finalFare.toString(),
+        infant_price: finalFare.toString(),
         booking_data: {
             booking_id: trip.fAMYid,
             fSoft: trip.fSoft,
