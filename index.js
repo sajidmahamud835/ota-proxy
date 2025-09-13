@@ -17,7 +17,7 @@ const IATA_LOCAL_API_TARGET = `${IATA_LOCAL_BASE_URL}/api`;
 
 // --- Middleware Setup ---
 app.use(morgan('dev'));
-app.use(upload.any()); // still needed for multipart
+app.use(upload.any()); // for multipart
 
 // =========================================================================
 // Status Route
@@ -77,11 +77,11 @@ app.use(
 );
 
 // =========================================================================
-// RAW body parser for PHPTravels Proxy (Duffel, Amy, etc.)
+// RAW Proxy for all other PHPTravels APIs (Duffel, Amy, etc.)
 // =========================================================================
 app.use(
     '/api',
-    bodyParser.raw({ type: '*/*' }), // parse raw body
+    express.raw({ type: '*/*' }), // raw body for proxy
     createProxyMiddleware({
         target: PHPTRAVELS_TARGET,
         changeOrigin: true,
@@ -89,8 +89,11 @@ app.use(
         onProxyReq: (proxyReq, req) => {
             if (req.body && req.body.length) {
                 proxyReq.setHeader('Content-Length', req.body.length);
-                proxyReq.write(req.body); // send raw buffer
+                proxyReq.write(req.body); // write raw buffer
             }
+        },
+        onProxyRes: (proxyRes, req, res) => {
+            console.log(`[PROXY] ${req.method} ${req.originalUrl} -> ${proxyRes.statusCode}`);
         }
     })
 );
