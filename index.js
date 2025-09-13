@@ -17,7 +17,7 @@ const IATA_LOCAL_API_TARGET = `${IATA_LOCAL_BASE_URL}/api`;
 app.use(morgan('dev'));
 
 // ✅ Apply JSON body parser ONLY for iatalocal requests
-app.use('/api/flights/iatalocal/*', bodyParser.json());
+app.use('/api/flights/iatalocal', bodyParser.json({ strict: false }));
 
 // =========================================================================
 // NEW: Status Route
