@@ -163,7 +163,7 @@ function createPhpSegments(trip) {
         currency: "BDT",
         actual_currency: "BDT",
         price: trip.fFare.toString(),
-        actual_price: (trip.fBFare || 0).toString(),
+        actual_price: (trip.fFare || 0).toString(),
         adult_price: trip.fFare.toString(),
         child_price: trip.fFare.toString(),
         infant_price: trip.fFare.toString(),
