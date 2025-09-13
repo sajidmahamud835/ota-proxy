@@ -20,7 +20,7 @@ app.use(morgan('dev'));
 app.use(upload.any()); // still needed for multipart
 
 // =========================================================================
-// Status Route for Health Checks
+// Status Route
 // =========================================================================
 app.get('/status', async (req, res) => {
     const startTime = Date.now();
@@ -49,9 +49,10 @@ app.get('/status', async (req, res) => {
 });
 
 // =========================================================================
-// Smart Middleware for /api/flights/iatalocal ONLY
+// IATA Local Adapter (needs parsed JSON)
 // =========================================================================
-app.use('/api/flights/iatalocal',
+app.use(
+    '/api/flights/iatalocal',
     bodyParser.json(),
     bodyParser.urlencoded({ extended: true }),
     async (req, res) => {
@@ -72,19 +73,30 @@ app.use('/api/flights/iatalocal',
             console.error('[ADAPTER] Error during iatalocal API call:', JSON.stringify(errorDetails, null, 2));
             return res.status(500).json([]);
         }
-    });
+    }
+);
 
 // =========================================================================
-// Proxy Middleware for PHPTravels (handles Duffel & others)
+// RAW body parser for PHPTravels Proxy (Duffel, Amy, etc.)
 // =========================================================================
-app.use('/api', createProxyMiddleware({
-    target: PHPTRAVELS_TARGET,
-    changeOrigin: true,
-    pathRewrite: { '^/api': '' }
-}));
+app.use(
+    '/api',
+    bodyParser.raw({ type: '*/*' }), // parse raw body
+    createProxyMiddleware({
+        target: PHPTRAVELS_TARGET,
+        changeOrigin: true,
+        pathRewrite: { '^/api': '' },
+        onProxyReq: (proxyReq, req) => {
+            if (req.body && req.body.length) {
+                proxyReq.setHeader('Content-Length', req.body.length);
+                proxyReq.write(req.body); // send raw buffer
+            }
+        }
+    })
+);
 
 // =========================================================================
-// MAPPING FUNCTIONS FOR IATALOCAL
+// IATA Local Mapping Functions
 // =========================================================================
 function convertDateToDDMonYYYY(yyyyMmDd) {
     if (!yyyyMmDd || typeof yyyyMmDd !== 'string') return "";
@@ -200,6 +212,9 @@ function mapIataLocalToPhpResponse(iataResponse, tripType) {
     return finalItineraries;
 }
 
+// =========================================================================
+// Root
+// =========================================================================
 app.get("/", (req, res) => {
     res.send("Welcome to the OTA Server.");
 });
