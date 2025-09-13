@@ -78,29 +78,6 @@ const smartApiHandler = async (req, res, next) => {
     next();
 };
 
-// =========================================================================
-// Price Calculation with Discount & Fee
-// =========================================================================
-function calculatePrice(trip) {
-    const basePrice = trip.fFare || 0;
-    const fromCountry = trip.xFrom.split(' - ')[2] || "";
-    const toCountry = trip.xDest.split(' - ')[2] || "";
-    const isDomestic = fromCountry === toCountry;
-
-    let discountedPrice = basePrice;
-
-    if (isDomestic) {
-        // Domestic: 3% discount + 100 BDT fee
-        discountedPrice = basePrice * 0.97 + 100;
-    } else {
-        // International: 5% discount + max(1000 BDT, 2% of fare)
-        const fee = Math.max(1000, basePrice * 0.02);
-        discountedPrice = basePrice * 0.95 + fee;
-    }
-
-    return Math.round(discountedPrice);
-}
-
 
 app.use('/api', smartApiHandler);
 
@@ -185,11 +162,11 @@ function createPhpSegments(trip) {
         total_duration: formattedDuration,
         currency: "BDT",
         actual_currency: "BDT",
-        price: calculatePrice(trip).toString(),
+        price: trip.fFare.toString(),
         actual_price: (trip.fBFare || 0).toString(),
-        adult_price: calculatePrice(trip).toString(),
-        child_price: calculatePrice(trip).toString(),
-        infant_price: calculatePrice(trip).toString(),
+        adult_price: trip.fFare.toString(),
+        child_price: trip.fFare.toString(),
+        infant_price: trip.fFare.toString(),
         booking_data: {
             booking_id: trip.fAMYid,
             fSoft: trip.fSoft,
