@@ -216,6 +216,10 @@ function mapIataLocalToPhpResponse(iataResponse, tripType) {
     return finalItineraries;
 }
 
+app.get("/", (req, res) => {
+    res.send("Welcome to the OTA Server.");
+});
+
 // Start server
 app.listen(PORT, () => {
     console.log(`Node.js API Adapter/Proxy running at http://localhost:${PORT}`);
