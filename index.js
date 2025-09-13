@@ -139,8 +139,32 @@ function formatDuration(totalMinutes) {
     return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 }
 
+// =========================================================================
+// Price Calculation with Discount & Fee
+// =========================================================================
+function calculatePrice(trip) {
+    const basePrice = trip.fFare || 0;
+    const fromCountry = trip.xFrom.split(' - ')[2] || "";
+    const toCountry = trip.xDest.split(' - ')[2] || "";
+    const isDomestic = fromCountry === toCountry;
+
+    let discountedPrice = basePrice;
+
+    if (isDomestic) {
+        // Domestic: 3% discount + 100 BDT fee
+        discountedPrice = basePrice * 0.97 + 100;
+    } else {
+        // International: 5% discount + max(1000 BDT, 2% of fare)
+        const fee = Math.max(1000, basePrice * 0.02);
+        discountedPrice = basePrice * 0.95 + fee;
+    }
+
+    return Math.round(discountedPrice);
+}
+
 function createPhpSegments(trip) {
     const formattedDuration = formatDuration(trip.fDursec);
+    const finalPrice = calculatePrice(trip);
 
     return trip.fLegs.map(leg => ({
         img: trip.stAirCode,
@@ -161,11 +185,11 @@ function createPhpSegments(trip) {
         total_duration: formattedDuration,
         currency: "BDT",
         actual_currency: "BDT",
-        price: trip.fFare.toString(),
-        actual_price: (trip.fBFare || 0).toString(),
-        adult_price: trip.fFare.toString(),
-        child_price: trip.fFare.toString(),
-        infant_price: trip.fFare.toString(),
+        price: finalPrice.toString(),
+        actual_price: (trip.fBFare || trip.fFare || 0).toString(),
+        adult_price: finalPrice.toString(),
+        child_price: finalPrice.toString(),
+        infant_price: finalPrice.toString(),
         booking_data: {
             booking_id: trip.fAMYid,
             fSoft: trip.fSoft,
@@ -215,7 +239,9 @@ function mapIataLocalToPhpResponse(iataResponse, tripType) {
     return finalItineraries;
 }
 
+// =========================================================================
 // Start server
+// =========================================================================
 app.listen(PORT, () => {
     console.log(`Node.js API Adapter/Proxy running at http://localhost:${PORT}`);
 });
