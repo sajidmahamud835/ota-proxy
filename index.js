@@ -14,37 +14,17 @@ const PHPTRAVELS_TARGET = 'https://api.phptravels.com';
 const IATA_LOCAL_BASE_URL = 'http://ota-node-server-2-1.onrender.com';
 const IATA_LOCAL_API_TARGET = `${IATA_LOCAL_BASE_URL}/api`;
 
-// --- Logging middleware ---
+// --- Logging ---
 app.use(morgan('dev'));
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
-app.use((req, res, next) => {
-    console.log('--- Incoming Request ---');
-    console.log(`${req.method} ${req.originalUrl}`);
-    console.log('Query:', req.query);
-    if (req.body && Object.keys(req.body).length) {
-        console.log('Body:', req.body);
-    }
-    const originalSend = res.send.bind(res);
-    res.send = (body) => {
-        console.log('--- Outgoing Response ---');
-        console.log('Status:', res.statusCode);
-        console.log('Body:', body);
-        return originalSend(body);
-    };
-    next();
-});
 
 // =========================================================================
-// IATA Local Adapter Route
+// 1️⃣ IATA Local Route (priority, uses JSON parsing)
 // =========================================================================
-app.post('/api/flights/iatalocal', async (req, res) => {
-    console.log('[ADAPTER] Intercepted iatalocal request.');
+app.post('/api/flights/iatalocal', bodyParser.json(), async (req, res) => {
+    console.log('[IATA LOCAL] Request:', req.body);
 
     try {
         const iataLocalRequestPayload = mapPhpToIataLocalRequest(req.body);
-        console.log('[ADAPTER] Mapped request:', JSON.stringify(iataLocalRequestPayload, null, 2));
 
         const iataLocalResponse = await axios.post(IATA_LOCAL_API_TARGET, iataLocalRequestPayload, {
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
@@ -54,13 +34,13 @@ app.post('/api/flights/iatalocal', async (req, res) => {
         return res.status(200).json(phpAppResponse);
     } catch (error) {
         const errorDetails = error.response ? error.response.data : error.message;
-        console.error('[ADAPTER] Error during iatalocal API call:', JSON.stringify(errorDetails, null, 2));
+        console.error('[IATA LOCAL] Error:', errorDetails);
         return res.status(500).json([]);
     }
 });
 
 // =========================================================================
-// RAW Proxy for all other PHPTravels APIs (Duffel, Amy, etc.)
+// 2️⃣ RAW Proxy for all other PHPTravels APIs (Duffel, Amy, etc.)
 // =========================================================================
 app.use(
     '/api',
@@ -72,7 +52,7 @@ app.use(
         onProxyReq: (proxyReq, req) => {
             if (req.body && req.body.length) {
                 proxyReq.setHeader('Content-Length', req.body.length);
-                proxyReq.write(req.body); // write raw buffer
+                proxyReq.write(req.body);
             }
         },
         onProxyRes: (proxyRes, req, res) => {
@@ -80,9 +60,7 @@ app.use(
             proxyRes.on('data', (chunk) => body.push(chunk));
             proxyRes.on('end', () => {
                 body = Buffer.concat(body).toString();
-                console.log('--- Proxy Response ---');
-                console.log('Status:', proxyRes.statusCode);
-                console.log('Body:', body);
+                console.log('[RAW PROXY] Status:', proxyRes.statusCode);
             });
         }
     })
@@ -105,7 +83,6 @@ function convertDateToDDMonYYYY(yyyyMmDd) {
 function mapPhpToIataLocalRequest(phpRequest) {
     const fromCode = (phpRequest.origin.split(' - ')[1] || phpRequest.origin).trim();
     const toCode = (phpRequest.destination.split(' - ')[1] || phpRequest.destination).trim();
-
     return {
         is_combo: 0,
         CMND: "_FLIGHTSEARCH_",
@@ -131,7 +108,6 @@ function formatDuration(totalMinutes) {
 
 function createPhpSegments(trip) {
     const formattedDuration = formatDuration(trip.fDursec);
-
     return trip.fLegs.map(leg => ({
         img: trip.stAirCode,
         flight_no: leg.xFlight,
@@ -185,7 +161,6 @@ function mapIataLocalToPhpResponse(iataResponse, tripType) {
 
     const outboundFlights = new Map();
     const inboundFlights = new Map();
-
     trips.forEach(trip => {
         const key = `${trip.fSoft}-${trip.fGDSid}`;
         if (trip.fReturn) inboundFlights.set(key, trip);
@@ -196,19 +171,18 @@ function mapIataLocalToPhpResponse(iataResponse, tripType) {
     outboundFlights.forEach((outboundTrip, key) => {
         if (inboundFlights.has(key)) {
             const inboundTrip = inboundFlights.get(key);
-            const outboundSegments = createPhpSegments(outboundTrip);
-            const inboundSegments = createPhpSegments(inboundTrip);
-            finalItineraries.push({ segments: [outboundSegments, inboundSegments] });
+            finalItineraries.push({
+                segments: [createPhpSegments(outboundTrip), createPhpSegments(inboundTrip)]
+            });
         }
     });
-
     return finalItineraries;
 }
 
-// --- Root ---
-app.get("/", (req, res) => {
-    res.send("Welcome to the OTA Proxy Server.");
-});
+// =========================================================================
+// Root
+// =========================================================================
+app.get("/", (req, res) => res.send("OTA Proxy Server OK"));
 
 // --- Start Server ---
 app.listen(PORT, () => {
