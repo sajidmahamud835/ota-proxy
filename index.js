@@ -22,7 +22,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use(upload.any());
 
 // =========================================================================
-// NEW: Status Route for Health Checks
+// Status Route for Health Checks
 // =========================================================================
 app.get('/status', async (req, res) => {
     const startTime = Date.now();
@@ -61,11 +61,13 @@ const smartApiHandler = async (req, res, next) => {
             const iataLocalRequestPayload = mapPhpToIataLocalRequest(req.body);
             console.log('[ADAPTER] Mapped request:', JSON.stringify(iataLocalRequestPayload, null, 2));
 
+            // Call search API
             const iataLocalResponse = await axios.post(IATA_LOCAL_API_TARGET, iataLocalRequestPayload, {
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
             });
 
-            const phpAppResponse = mapIataLocalToPhpResponse(iataLocalResponse.data, req.body.triptypename);
+            // Map to PHP response
+            const phpAppResponse = await mapIataLocalToPhpResponse(iataLocalResponse.data, req.body.triptypename);
             return res.status(200).json(phpAppResponse);
         } catch (error) {
             const errorDetails = error.response ? error.response.data : error.message;
@@ -78,7 +80,6 @@ const smartApiHandler = async (req, res, next) => {
     next();
 };
 
-
 app.use('/api', smartApiHandler);
 
 // =========================================================================
@@ -89,7 +90,6 @@ app.use('/api', createProxyMiddleware({
     changeOrigin: true,
     pathRewrite: { '^/api': '' },
     onProxyReq: (proxyReq, req) => {
-        // Re-inject body for POST requests
         if (req.body && Object.keys(req.body).length > 0) {
             const bodyData = JSON.stringify(req.body);
             proxyReq.setHeader('Content-Type', 'application/json');
@@ -98,6 +98,28 @@ app.use('/api', createProxyMiddleware({
         }
     }
 }));
+
+// =========================================================================
+// Helper: Call PRICECOMBO for each trip
+// =========================================================================
+async function fetchPriceCombo(trip) {
+    try {
+        const url = `${IATA_LOCAL_API_TARGET}?CMND=_PRICECOMBO_&sid1=${trip.fSearchid}&sid2=0&aid1=${trip.fAMYid}&aid2&disp=1`;
+        const response = await axios.get(url, { headers: { Accept: 'application/json' } });
+
+        if (response.data && response.data.data && response.data.data[0]) {
+            const combo = response.data.data[0];
+            return {
+                TFare: combo.TFare || trip.fFare,
+                NPay: combo.NPay || trip.fFare,
+                Disc: combo.Disc || 0
+            };
+        }
+    } catch (err) {
+        console.error(`[PRICECOMBO] Failed for trip ${trip.fAMYid}:`, err.message);
+    }
+    return { TFare: trip.fFare, NPay: trip.fFare, Disc: 0 };
+}
 
 // =========================================================================
 // MAPPING FUNCTIONS FOR IATALOCAL
@@ -140,8 +162,9 @@ function formatDuration(totalMinutes) {
     return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 }
 
-function createPhpSegments(trip) {
+function createPhpSegments(trip, fareDetails) {
     const formattedDuration = formatDuration(trip.fDursec);
+    const { TFare, NPay, Disc } = fareDetails;
 
     return trip.fLegs.map(leg => ({
         img: trip.stAirCode,
@@ -162,15 +185,19 @@ function createPhpSegments(trip) {
         total_duration: formattedDuration,
         currency: "BDT",
         actual_currency: "BDT",
-        price: trip.fFare.toString(),
-        actual_price: (trip.fFare || 0).toString(),
-        adult_price: trip.fFare.toString(),
-        child_price: trip.fFare.toString(),
-        infant_price: trip.fFare.toString(),
+        price: NPay.toString(),
+        actual_price: NPay.toString(),
+        adult_price: NPay.toString(),
+        child_price: NPay.toString(),
+        infant_price: NPay.toString(),
+        retail_price: TFare,
+        npay: NPay,
+        disc: Disc,
         booking_data: {
             booking_id: trip.fAMYid,
             fSoft: trip.fSoft,
             fGDSid: trip.fGDSid,
+            fSearchid: trip.fSearchid,
             transit1: trip.fTransit1 || "",
             transit2: trip.fTransit2 || "",
             transit_ap1: trip.fTransitAP1 || "",
@@ -186,34 +213,40 @@ function createPhpSegments(trip) {
     }));
 }
 
-function mapIataLocalToPhpResponse(iataResponse, tripType) {
+async function mapIataLocalToPhpResponse(iataResponse, tripType) {
     if (!iataResponse.success || !iataResponse.data || !iataResponse.data.Trips) return [];
 
     const trips = iataResponse.data.Trips;
+    const results = [];
+
     if (tripType === 'oneway') {
-        return trips.map(trip => ({ segments: [createPhpSegments(trip)] }));
+        for (const trip of trips) {
+            const fareDetails = await fetchPriceCombo(trip);
+            results.push({ segments: [createPhpSegments(trip, fareDetails)] });
+        }
+        return results;
     }
 
     const outboundFlights = new Map();
     const inboundFlights = new Map();
 
-    trips.forEach(trip => {
-        const key = `${trip.fSoft}-${trip.fGDSid}`;
-        if (trip.fReturn) inboundFlights.set(key, trip);
-        else outboundFlights.set(key, trip);
-    });
+    for (const trip of trips) {
+        if (trip.fReturn) inboundFlights.set(trip.fAMYid, trip);
+        else outboundFlights.set(trip.fAMYid, trip);
+    }
 
-    const finalItineraries = [];
-    outboundFlights.forEach((outboundTrip, key) => {
+    for (const [key, outboundTrip] of outboundFlights) {
         if (inboundFlights.has(key)) {
             const inboundTrip = inboundFlights.get(key);
-            const outboundSegments = createPhpSegments(outboundTrip);
-            const inboundSegments = createPhpSegments(inboundTrip);
-            finalItineraries.push({ segments: [outboundSegments, inboundSegments] });
+            const outboundFare = await fetchPriceCombo(outboundTrip);
+            const inboundFare = await fetchPriceCombo(inboundTrip);
+            const outboundSegments = createPhpSegments(outboundTrip, outboundFare);
+            const inboundSegments = createPhpSegments(inboundTrip, inboundFare);
+            results.push({ segments: [outboundSegments, inboundSegments] });
         }
-    });
+    }
 
-    return finalItineraries;
+    return results;
 }
 
 // Start server
